@@ -1,6 +1,6 @@
 """Builds the Morimon adventure PDF straight from Python (ReportLab).
 
-The layout reproduces the six pages of the old Adventure_Template.docx: 5.5" x 8.5"
+The layout reproduces the pages of the old Adventure_Template.docx (its cover page is no longer used): 5.5" x 8.5"
 pages, 0.2" margins, Georgia / Cambria / Consolas type, the same colours, boxes,
 rules and running header/footer. Nothing here needs Word or LibreOffice.
 
@@ -133,12 +133,19 @@ def _diamond(c, cx, base, color, half=2.1):
 
 # ---- running header / footer ----
 
-def _header(c, label, dark=True):
+def _header(c, label, dark=True, title="Template"):
     left_color = DARK if dark else white
     label_color = LABEL if dark else LIGHT_ON_BLUE
     rule = DARK if dark else LIGHT_ON_BLUE
-    _text(c, MARGIN, 20.8, _tracked("Template"), "Consolas-Bold", 7, left_color)
-    _text(c, RIGHT, 20.8, _tracked(label), "Consolas", 7, label_color, "r")
+    right = _tracked(label)
+    left = _tracked(title)
+    room = CONTENT_W - _width(right, "Consolas", 7) - 12
+    if _width(left, "Consolas-Bold", 7) > room:
+        left = title.upper()  # too long to space out, so drop the letter spacing
+    while len(left) > 1 and _width(left, "Consolas-Bold", 7) > room:
+        left = left[:-2] + "…"  # still too long (very long name): shorten it
+    _text(c, MARGIN, 20.8, left, "Consolas-Bold", 7, left_color)
+    _text(c, RIGHT, 20.8, right, "Consolas", 7, label_color, "r")
     _hline(c, MARGIN, RIGHT, 27.0, rule, 0.75)
 
 
@@ -147,7 +154,7 @@ def _footer(c, label, page_number=None, dark=True, base=595.8):
     text = _tracked(label)
     gap = _width("  ", "Consolas", 7)
     dia = 4.2
-    num = str(page_number) if page_number is not None else ""
+    num = str(c.getPageNumber()) if page_number else ""
     total = _width(text, "Consolas", 7) + gap + dia + (gap + _width(num, "Consolas", 7) if num else 0)
     x = PAGE_W / 2 - total / 2
     _text(c, x, base, text, "Consolas", 7, color)
@@ -199,23 +206,8 @@ def _placeholder_box(c, top, height, label="[ image placeholder ]"):
 
 # ---- pages ----
 
-def _page_cover(c):
-    _header(c, "Frontispiece")
-    _eyebrow(c, "A tagline goes here", base=54.6, size=8)
-    _text(c, MARGIN, 87.1, "Document Title", "Georgia-Bold", 30, DARK)
-    _text(c, MARGIN, 106.8, "A short italic subtitle that describes what this document is and who it's for.",
-          "Cambria-Italic", 9.5, BODY)
-    _placeholder_box(c, 122.9, 58.0)
-    _text(c, RIGHT, 188.9, "FRONTISPIECE · NO. 01", "Consolas", 6.5, LABEL, "r")
-    _text(c, MARGIN, 238.8, "A short line of front-matter text, such as who this is written for.",
-          "Cambria", 7.5, BODY)
-    _text(c, RIGHT, 238.1, _tracked("Publisher"), "Consolas", 7, LABEL, "r")
-    _text(c, RIGHT, 247.4, _tracked("Edition Info"), "Consolas", 7, LABEL, "r")
-    _footer(c, "Frontispiece", 1)
-
-
 def _page_content(c, opening_text, player_name, location_name, image_path):
-    _header(c, "Content Page")
+    _header(c, location_name, title=f"{player_name}'s Adventure")
     _eyebrow(c, "Section label")
     dy = _heading(c, f"{player_name}'s Journey Begins")
 
@@ -248,7 +240,7 @@ def _page_content(c, opening_text, player_name, location_name, image_path):
     for line in para:
         _text(c, MARGIN, base, line, "Cambria", 8.5, BODY)
         base += 9.94
-    _footer(c, "Content Page", 2)
+    _footer(c, location_name, True)
 
 
 def _page_divider(c):
@@ -292,7 +284,7 @@ def _page_steps(c):
         _text(c, MARGIN + 7, base, lab, "Consolas-Bold", 7, DARK)
         _text(c, MARGIN + 7 + _width(lab, "Consolas-Bold", 7), base, "Short description of this option.",
               "Cambria", 7.5, BODY)
-    _footer(c, "How It Works", 4)
+    _footer(c, "How It Works", True)
 
 
 def _page_callouts(c):
@@ -330,7 +322,7 @@ def _page_callouts(c):
         c.setStrokeColor(BLUE)
         c.setLineWidth(1.5)
         c.line(x, _y(228.5), x, _y(325.8))
-    _footer(c, "Tiered Callouts", 5)
+    _footer(c, "Tiered Callouts", True)
 
 
 def _page_table(c):
@@ -364,18 +356,16 @@ def _page_table(c):
         x = MARGIN + i * badge_w
         _rect(c, x, 218.0, badge_w, 22.9, fill=color)
         _text(c, x + badge_w / 2, 225.9, label, "Consolas-Bold", 6.5, white, "c")
-    _footer(c, "Table & Badges", 6)
+    _footer(c, "Table & Badges", True)
 
 
 def build_adventure_pdf(opening_text, player_name, location_name, image_path, output_path):
-    """Write the finished six-page adventure PDF to `output_path`."""
+    """Write the finished five-page adventure PDF to `output_path`."""
     _register_fonts()
     c = canvas.Canvas(output_path, pagesize=(PAGE_W, PAGE_H))
     c.setTitle(f"{player_name}'s Journey Begins")
     c.setAuthor("Morimon Story Maker")
 
-    _page_cover(c)
-    c.showPage()
     _page_content(c, opening_text, player_name, location_name, image_path)
     c.showPage()
     _page_divider(c)
