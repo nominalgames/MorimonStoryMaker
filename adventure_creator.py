@@ -5,6 +5,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import openpyxl
 
+from location_reveal import get_location_reveal
 from pdf_builder import build_adventure_pdf
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,17 +47,19 @@ def get_random_opening(player_type):
     ws = wb["Openings"]
     matches = []
     for row in ws.iter_rows(min_row=2, values_only=True):
+        if len(row) < 4:  # short/blank rows at the end of the sheet
+            continue
         opening_text, opening_player_type = row[1], row[3]
-        if opening_player_type == player_type:
+        if opening_text and opening_player_type == player_type:
             matches.append(opening_text)
     if not matches:
         raise ValueError(f"No openings found for Player_Type '{player_type}'")
     return random.choice(matches)
 
 
-def create_adventure(opening_text, player_name, location_name, image_path, output_path):
+def create_adventure(opening_text, player_name, location_id, image_path, output_path):
     """Write the finished adventure PDF (built directly in Python, see pdf_builder.py)."""
-    build_adventure_pdf(opening_text, player_name, location_name, image_path, output_path)
+    build_adventure_pdf(opening_text, player_name, location_id, image_path, output_path)
 
 
 class AdventureCreatorApp:
@@ -151,9 +154,11 @@ class AdventureCreatorApp:
             return
 
         try:
-            image_path = get_location_image_path(get_location_id(starting_location))
+            location_id = get_location_id(starting_location)
+            image_path = get_location_image_path(location_id)
+            get_location_reveal(location_id)  # fail early if the Location_<ID> tab is missing
         except (ValueError, FileNotFoundError) as exc:
-            messagebox.showerror("Location Image Not Found", str(exc))
+            messagebox.showerror("Location Data Not Found", str(exc))
             return
 
         output_path = filedialog.asksaveasfilename(
@@ -166,7 +171,7 @@ class AdventureCreatorApp:
             return
 
         try:
-            create_adventure(opening_text, Player_Name, starting_location, image_path, output_path)
+            create_adventure(opening_text, Player_Name, location_id, image_path, output_path)
         except Exception as exc:
             messagebox.showerror("Failed to Create Adventure", str(exc))
             return

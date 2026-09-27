@@ -15,6 +15,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
+from location_reveal import get_location_reveal
+
 PAGE_W, PAGE_H = 396.0, 612.0  # 5.5" x 8.5"
 MARGIN = 14.4  # 0.2"
 CONTENT_W = PAGE_W - 2 * MARGIN
@@ -206,7 +208,79 @@ def _placeholder_box(c, top, height, label="[ image placeholder ]"):
 
 # ---- pages ----
 
-def _page_content(c, opening_text, player_name, location_name, image_path, title):
+# ---- location reveal (heading + text + icon bullets) ----
+# Bullet design follows the zine's "icon-list": a blue circular badge with a white
+# icon, then a bold serif title. Sizes are the zine's CSS pixels scaled to this page.
+BADGE_D = 19.0  # badge diameter
+BULLET_INDENT = 28.0  # badge + gap before the text
+BULLET_GAP = 8.0  # space between bullets
+
+
+def _pin_badge(c, x, top, d=BADGE_D):
+    """Blue circle with the zine's white map-pin icon (24x24 SVG path, y-down)."""
+    cx, cy = x + d / 2, _y(top + d / 2)
+    c.setFillColor(BLUE)
+    c.circle(cx, cy, d / 2, stroke=0, fill=1)
+
+    s = (d * 0.57) / 24.0  # icon is ~57% of the badge, like 16px in 28px
+
+    def px(sx):
+        return cx + (sx - 12) * s
+
+    def py(sy):
+        return cy - (sy - 12) * s
+
+    k = 0.5523 * 7
+    p = c.beginPath()
+    p.moveTo(px(12), py(21))
+    p.curveTo(px(12), py(21), px(5), py(16.4), px(5), py(11))
+    p.curveTo(px(5), py(11 - k), px(12 - k), py(4), px(12), py(4))
+    p.curveTo(px(12 + k), py(4), px(19), py(11 - k), px(19), py(11))
+    p.curveTo(px(19), py(16.4), px(12), py(21), px(12), py(21))
+    p.close()
+    c.setFillColor(white)
+    c.drawPath(p, fill=1, stroke=0)
+    c.setFillColor(BLUE)
+    c.circle(px(12), py(10.6), 2.6 * s, stroke=0, fill=1)
+
+
+def draw_location_reveal(c, top, reveal):
+    """Draw one location reveal starting at `top` (distance from the top of the page):
+    a heading with the location's name, its reveal text, then one icon bullet per
+    sub-location. `reveal` is a location_reveal.LocationReveal.
+
+    Returns the y of the bottom of what it drew, so the caller can keep flowing content
+    below it, or call this again to stack another reveal.
+    """
+    base = top + 14
+    extra = _heading(c, reveal.name, base=base)  # same style as the page heading
+    y = base + extra + 16
+
+    if reveal.reveal_text:
+        for line in _wrap(reveal.reveal_text, "Cambria", 8.5, CONTENT_W, CONTENT_W):
+            _text(c, MARGIN, y, line, "Cambria", 8.5, BODY)
+            y += 9.94
+        y = y - 9.94 + 3  # bottom edge of the paragraph
+    else:
+        y = base + extra + 3
+
+    bottom = y
+    y += 12
+    text_w = CONTENT_W - BULLET_INDENT
+    for name in reveal.sub_locations:
+        lines = _wrap(name, "Georgia-Bold", 10.5, text_w, text_w)
+        _pin_badge(c, MARGIN, y)
+        for i, line in enumerate(lines):
+            _text(c, MARGIN + BULLET_INDENT, y + 13.1 + i * 12.6, line, "Georgia-Bold", 10.5, DARK)
+        row_h = max(BADGE_D, 13.1 + (len(lines) - 1) * 12.6 + 4)
+        bottom = y + row_h
+        y = bottom + BULLET_GAP
+    return bottom
+
+
+def _page_content(c, opening_text, player_name, location_id, image_path, title):
+    reveal = get_location_reveal(location_id)
+    location_name = reveal.name
     _header(c, location_name, title=title)
     _eyebrow(c, "Section label")
     dy = _heading(c, f"{player_name}'s Journey Begins")
@@ -234,9 +308,13 @@ def _page_content(c, opening_text, player_name, location_name, image_path, title
     c.drawImage(reader, PAGE_W / 2 - w / 2, _y(img_top + h), width=w, height=h, mask="auto")
     _text(c, RIGHT, img_top + h + 8.0, location_name.upper(), "Consolas", 6.5, LABEL, "r")
 
+    # reveal the starting location: heading, reveal text and sub-location bullets
+    caption_base = img_top + h + 8.0
+    reveal_bottom = draw_location_reveal(c, caption_base + 14, reveal)
+
     para = _wrap("A second paragraph can follow the image placeholder, continuing the "
                  "section's explanation or adding a supporting detail.", "Cambria", 8.5, CONTENT_W, CONTENT_W)
-    base = img_top + h + 8.0 + 20.8
+    base = reveal_bottom + 18
     for line in para:
         _text(c, MARGIN, base, line, "Cambria", 8.5, BODY)
         base += 9.94
@@ -359,7 +437,7 @@ def _page_table(c, title):
     _footer(c, "Table & Badges", True)
 
 
-def build_adventure_pdf(opening_text, player_name, location_name, image_path, output_path):
+def build_adventure_pdf(opening_text, player_name, location_id, image_path, output_path):
     """Write the finished five-page adventure PDF to `output_path`."""
     _register_fonts()
     c = canvas.Canvas(output_path, pagesize=(PAGE_W, PAGE_H))
@@ -367,7 +445,7 @@ def build_adventure_pdf(opening_text, player_name, location_name, image_path, ou
     c.setTitle(f"{player_name}'s Journey Begins")
     c.setAuthor("Morimon Story Maker")
 
-    _page_content(c, opening_text, player_name, location_name, image_path, header_title)
+    _page_content(c, opening_text, player_name, location_id, image_path, header_title)
     c.showPage()
     _page_divider(c, header_title)
     c.showPage()
