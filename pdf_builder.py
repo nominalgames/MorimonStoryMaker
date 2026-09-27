@@ -206,8 +206,8 @@ def _placeholder_box(c, top, height, label="[ image placeholder ]"):
 
 # ---- pages ----
 
-def _page_content(c, opening_text, player_name, location_name, image_path):
-    _header(c, location_name, title=f"{player_name}'s Adventure")
+def _page_content(c, opening_text, player_name, location_name, image_path, title):
+    _header(c, location_name, title=title)
     _eyebrow(c, "Section label")
     dy = _heading(c, f"{player_name}'s Journey Begins")
 
@@ -243,10 +243,10 @@ def _page_content(c, opening_text, player_name, location_name, image_path):
     _footer(c, location_name, True)
 
 
-def _page_divider(c):
+def _page_divider(c, title):
     c.setFillColor(BLUE)
     c.rect(0, 0, PAGE_W, PAGE_H, fill=1, stroke=0)  # full-bleed
-    _header(c, "Part One", dark=False)
+    _header(c, "Part One", dark=False, title=title)
     _text(c, MARGIN, 224.7, _tracked("Part One"), "Consolas-Bold", 8, LIGHT_ON_BLUE)
     _text(c, MARGIN, 254.6, "Section Title", "Georgia-Bold", 26, white)
     _text(c, MARGIN, 276.4, "A short paragraph introducing this part of the document sits below the big title.",
@@ -258,8 +258,8 @@ def _page_divider(c):
     _footer(c, "Part One", None, dark=False, base=536.2)
 
 
-def _page_steps(c):
-    _header(c, "How It Works")
+def _page_steps(c, title):
+    _header(c, "How It Works", title=title)
     _eyebrow(c, "How it works")
     _heading(c, "Numbered Steps")
     _text(c, MARGIN, 74.9, "Use this layout for any process the reader should follow in order.", "Cambria", 8.5, BODY)
@@ -287,8 +287,8 @@ def _page_steps(c):
     _footer(c, "How It Works", True)
 
 
-def _page_callouts(c):
-    _header(c, "Tiered Callouts")
+def _page_callouts(c, title):
+    _header(c, "Tiered Callouts", title=title)
     _eyebrow(c, "Reading the result")
     _heading(c, "Tiered Callouts")
     _text(c, MARGIN, 74.9, "Use color to separate outcomes into best / okay / worst tiers.", "Cambria", 8.5, BODY)
@@ -325,8 +325,8 @@ def _page_callouts(c):
     _footer(c, "Tiered Callouts", True)
 
 
-def _page_table(c):
-    _header(c, "Table & Badges")
+def _page_table(c, title):
+    _header(c, "Table & Badges", title=title)
     _eyebrow(c, "Reference")
     _heading(c, "Table & Badges")
     _text(c, MARGIN, 74.9, "A small reference grid, plus inline colored status badges.", "Cambria", 8.5, BODY)
@@ -363,17 +363,18 @@ def build_adventure_pdf(opening_text, player_name, location_name, image_path, ou
     """Write the finished five-page adventure PDF to `output_path`."""
     _register_fonts()
     c = canvas.Canvas(output_path, pagesize=(PAGE_W, PAGE_H))
+    header_title = f"{player_name}'s Adventure"  # left side of every page header
     c.setTitle(f"{player_name}'s Journey Begins")
     c.setAuthor("Morimon Story Maker")
 
-    _page_content(c, opening_text, player_name, location_name, image_path)
+    _page_content(c, opening_text, player_name, location_name, image_path, header_title)
     c.showPage()
-    _page_divider(c)
+    _page_divider(c, header_title)
     c.showPage()
-    _page_steps(c)
+    _page_steps(c, header_title)
     c.showPage()
-    _page_callouts(c)
+    _page_callouts(c, header_title)
     c.showPage()
-    _page_table(c)
+    _page_table(c, header_title)
     c.showPage()
     c.save()
