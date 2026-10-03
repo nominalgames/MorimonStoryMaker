@@ -8,6 +8,8 @@ All positions below are written as distances from the TOP of the page (in points
 and converted by `_y()`, because that's how they were measured from the docx render.
 """
 import os
+import random
+import re
 
 from reportlab.lib.colors import HexColor, white
 from reportlab.pdfbase import pdfmetrics
@@ -208,6 +210,44 @@ def _placeholder_box(c, top, height, label="[ image placeholder ]"):
 
 # ---- pages ----
 
+
+class _PageFlow:
+    """Tracks a vertical write position on page 1 and starts a new page — with
+    the same running header/footer, but no repeated heading — whenever the next
+    block would land on the footer instead of above it. Page 1's content varies
+    with the data (opening text, the location reveal and its bullets), so unlike
+    the other, fixed-length pages, it can overflow and needs to keep going onto
+    however many pages it takes."""
+
+    SAFE_BOTTOM = 578.0  # last content must end above the footer (baseline ~595.8)
+    CONTINUATION_TOP = 40.0  # top of body text on a page that continues the flow
+
+    def __init__(self, c, title, footer_label):
+        self.c = c
+        self.title = title
+        self.footer_label = footer_label
+        self.y = 0.0
+
+    def fits(self, height):
+        return self.y + height <= self.SAFE_BOTTOM
+
+    def ensure(self, height):
+        """Make sure `height` points of room remain before the footer; if not,
+        close out this page (footer + page break) and start the next one."""
+        if not self.fits(height):
+            _footer(self.c, self.footer_label, True)
+            self.c.showPage()
+            _header(self.c, self.footer_label, title=self.title)
+            self.y = self.CONTINUATION_TOP
+
+    def line(self, x, text, font, size, color, line_height):
+        """Draw one already-wrapped line, breaking to a new page first if it
+        wouldn't fit, then advance past it."""
+        self.ensure(line_height)
+        _text(self.c, x, self.y, text, font, size, color)
+        self.y += line_height
+
+
 # ---- location reveal (heading + text + icon bullets) ----
 # Bullet design follows the zine's "icon-list": a blue circular badge with a white
 # icon, then a bold serif title. Sizes are the zine's CSS pixels scaled to this page.
@@ -244,60 +284,145 @@ def _pin_badge(c, x, top, d=BADGE_D):
     c.circle(px(12), py(10.6), 2.6 * s, stroke=0, fill=1)
 
 
-def draw_location_reveal(c, top, reveal):
-    """Draw one location reveal starting at `top` (distance from the top of the page):
+def draw_location_reveal(flow, reveal, player_name="", main_quest=None):
+    """Draw one location reveal at the current position of `flow` (a _PageFlow):
     a heading with the location's name, its reveal text, then one icon bullet per
-    sub-location. `reveal` is a location_reveal.LocationReveal.
+    sub-location. A mandatory sub-location always gets a bullet; a non-mandatory one
+    gets a fresh 50/50 roll every time this is called. `reveal` is a
+    location_reveal.LocationReveal. Any "[Player_Name]" in the reveal/sub-location
+    text (the data has some, e.g. "Hey [Player_Name], back so soon?") is swapped
+    for `player_name`, same as the opening text.
 
-    Returns the y of the bottom of what it drew, so the caller can keep flowing content
-    below it, or call this again to stack another reveal.
+    If `main_quest` (a main_quest.MainQuest) has a step at this sub-location, that
+    step's Text is printed right after the sub-location's own description, inside
+    the same bullet.
+
+    If a heading, paragraph line or bullet would land on the footer instead of
+    above it, `flow` starts a new page (same running header/footer) first, so a
+    long reveal continues onto however many pages it needs.
+
+    Returns the y of the bottom of what it drew (on whichever page it ends up on),
+    so the caller can keep flowing content below it, or call this again to stack
+    another reveal.
     """
-    base = top + 14
-    extra = _heading(c, reveal.name, base=base)  # same style as the page heading
-    y = base + extra + 16
+    c = flow.c
 
-    if reveal.reveal_text:
-        for line in _wrap(reveal.reveal_text, "Cambria", 8.5, CONTENT_W, CONTENT_W):
-            _text(c, MARGIN, y, line, "Cambria", 8.5, BODY)
-            y += 9.94
-        y = y - 9.94 + 3  # bottom edge of the paragraph
+    def personalize(text):
+        return text.replace("[Player_Name]", player_name) if player_name else text
+
+    flow.y += 28  # matches the old draw_location_reveal(c, top, ...)'s `base = top + 14`
+    flow.ensure(50)  # room for the heading (it wraps only for an unusually long name)
+    heading_top = flow.y
+    extra = _heading(c, reveal.name, base=heading_top)  # same style as the page heading
+    flow.y = heading_top + extra + 16
+
+    reveal_text = personalize(reveal.reveal_text)
+    if reveal_text:
+        lines = _wrap(reveal_text, "Cambria", 8.5, CONTENT_W, CONTENT_W)
+        for line in lines:
+            flow.line(MARGIN, line, "Cambria", 8.5, BODY, 9.94)
+        flow.y += 3 - 9.94  # bottom edge of the paragraph, not the next line's baseline
     else:
-        y = base + extra + 3
+        flow.y = heading_top + extra + 3
 
-    bottom = y
-    y += 12
+    bottom = flow.y
+    flow.y += 12
     text_w = CONTENT_W - BULLET_INDENT
-    for name in reveal.sub_locations:
-        lines = _wrap(name, "Georgia-Bold", 10.5, text_w, text_w)
+    LINE_H = 9.36  # advance from one quest/description line to the next
+    BLANK_LINE = LINE_H  # one blank line's worth of extra space, for a line break
+    # a mandatory sub-location always appears; a non-mandatory one is a 50/50 roll,
+    # decided fresh each time the reveal is drawn
+    shown = [sub for sub in reveal.sub_locations if sub.mandatory or random.random() < 0.5]
+
+    def wrap_paragraphs(text):
+        """Split on a blank line in the source cell (a literal line break the
+        person typed, e.g. "...\\n\\nNext, ...") and wrap each part on its own,
+        so that break survives into the PDF instead of being collapsed away."""
+        parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+        return [_wrap(p, "Cambria", 8, text_w, text_w) for p in parts]
+
+    for sub in shown:
+        # The title and its own description are one atomic unit, same as before:
+        # a bullet's badge/title never appears without its description right under
+        # it. Each quest-text paragraph, though, is its OWN atomic unit after that:
+        # whichever ones fit stay right where they are (including the first one,
+        # directly after the title/description), and only the first one that
+        # doesn't fit (and anything after it) moves to a new page.
+        title_lines = _wrap(sub.name, "Georgia-Bold", 10.5, text_w, text_w)
+        title_last_offset = 13.1 + (len(title_lines) - 1) * 12.6
+
+        description = personalize(sub.description)
+        desc_lines = _wrap(description, "Cambria", 8, text_w, text_w) if description else []
+        if desc_lines:
+            desc_first_offset = title_last_offset + 10.9
+            titled_desc_bottom = desc_first_offset + (len(desc_lines) - 1) * LINE_H + 4
+        else:
+            desc_first_offset = None
+            titled_desc_bottom = title_last_offset + 4
+
+        flow.ensure(max(BADGE_D, titled_desc_bottom))
+        y = flow.y
         _pin_badge(c, MARGIN, y)
-        for i, line in enumerate(lines):
+        for i, line in enumerate(title_lines):
             _text(c, MARGIN + BULLET_INDENT, y + 13.1 + i * 12.6, line, "Georgia-Bold", 10.5, DARK)
-        row_h = max(BADGE_D, 13.1 + (len(lines) - 1) * 12.6 + 4)
-        bottom = y + row_h
-        y = bottom + BULLET_GAP
+        if desc_first_offset is not None:
+            for i, line in enumerate(desc_lines):
+                _text(c, MARGIN + BULLET_INDENT, y + desc_first_offset + i * LINE_H, line, "Cambria", 8, BODY)
+            flow.y = y + desc_first_offset + (len(desc_lines) - 1) * LINE_H  # description's last baseline
+            had_desc = True
+        else:
+            flow.y = y + title_last_offset  # title's last baseline
+            had_desc = False
+
+        quest_text = main_quest.text_for(reveal.location_id, sub.sub_location_id) if main_quest else ""
+        quest_paragraphs = wrap_paragraphs(personalize(quest_text)) if quest_text else []
+        for i, para_lines in enumerate(quest_paragraphs):
+            if i == 0:
+                # a full line break before the quest text: one blank line's worth
+                # of extra space on top of whatever the normal transition gap would
+                # otherwise be (continuing straight from the description's own body
+                # text, or the tight title -> body gap if there's no description)
+                gap = (LINE_H if had_desc else 10.9) + BLANK_LINE
+            else:
+                gap = 2 * LINE_H  # the blank line between two quest paragraphs
+            flow.y += gap
+            flow.ensure((len(para_lines) - 1) * LINE_H + 4)
+            y_para = flow.y
+            for j, line in enumerate(para_lines):
+                _text(c, MARGIN + BULLET_INDENT, y_para + j * LINE_H, line, "Cambria", 8, BODY)
+            flow.y = y_para + (len(para_lines) - 1) * LINE_H
+
+        bottom = flow.y + 4
+        flow.y = bottom + BULLET_GAP
     return bottom
 
 
-def _page_content(c, opening_text, player_name, location_id, image_path, title):
+def _page_content(c, opening_text, player_name, location_id, image_path, title, main_quest=None):
     reveal = get_location_reveal(location_id)
     location_name = reveal.name
     _header(c, location_name, title=title)
     _eyebrow(c, "Section label")
     dy = _heading(c, f"{player_name}'s Journey Begins")
 
-    # opening paragraph with a blue drop cap
+    flow = _PageFlow(c, title, location_name)
+
+    # opening paragraph with a blue drop cap (the cap and the first line share a
+    # baseline, so they're drawn together rather than through flow.line())
     opening = opening_text.replace("[Player_Name]", player_name).strip()
     cap, rest = opening[0], opening[1:]
     cap_w = _width(cap, "Georgia-Bold", 22)
-    _text(c, MARGIN, 87.0 + dy, cap, "Georgia-Bold", 22, BLUE)
     lines = _wrap(rest, "Cambria", 8.5, CONTENT_W - cap_w, CONTENT_W)
-    base = 87.0 + dy
-    for i, line in enumerate(lines):
-        _text(c, MARGIN + cap_w if i == 0 else MARGIN, base, line, "Cambria", 8.5, BODY)
-        base += 12.9 if i == 0 else 9.94
+    flow.y = 87.0 + dy
+    flow.ensure(12.9)
+    _text(c, MARGIN, flow.y, cap, "Georgia-Bold", 22, BLUE)
+    if lines:
+        _text(c, MARGIN + cap_w, flow.y, lines[0], "Cambria", 8.5, BODY)
+    flow.y += 12.9
+    for line in lines[1:]:
+        flow.line(MARGIN, line, "Cambria", 8.5, BODY, 9.94)
 
-    # location picture: full text width, centred, never taller than 4.5"
-    img_top = base - 9.94 + 9.8
+    # location picture: full text width, centred, never taller than 4.5"; the
+    # picture and its caption move to a new page together if they don't fit
     reader = ImageReader(image_path)
     iw, ih = reader.getSize()
     w = CONTENT_W
@@ -305,19 +430,21 @@ def _page_content(c, opening_text, player_name, location_id, image_path, title):
     if h > MAX_IMAGE_H:
         h = MAX_IMAGE_H
         w = h * iw / ih
+    flow.y = flow.y - 9.94 + 9.8
+    flow.ensure(h + 16)
+    img_top = flow.y
     c.drawImage(reader, PAGE_W / 2 - w / 2, _y(img_top + h), width=w, height=h, mask="auto")
     _text(c, RIGHT, img_top + h + 8.0, location_name.upper(), "Consolas", 6.5, LABEL, "r")
+    flow.y = img_top + h + 8.0
 
     # reveal the starting location: heading, reveal text and sub-location bullets
-    caption_base = img_top + h + 8.0
-    reveal_bottom = draw_location_reveal(c, caption_base + 14, reveal)
+    reveal_bottom = draw_location_reveal(flow, reveal, player_name, main_quest)
 
     para = _wrap("A second paragraph can follow the image placeholder, continuing the "
                  "section's explanation or adding a supporting detail.", "Cambria", 8.5, CONTENT_W, CONTENT_W)
-    base = reveal_bottom + 18
+    flow.y = reveal_bottom + 18
     for line in para:
-        _text(c, MARGIN, base, line, "Cambria", 8.5, BODY)
-        base += 9.94
+        flow.line(MARGIN, line, "Cambria", 8.5, BODY, 9.94)
     _footer(c, location_name, True)
 
 
@@ -437,7 +564,7 @@ def _page_table(c, title):
     _footer(c, "Table & Badges", True)
 
 
-def build_adventure_pdf(opening_text, player_name, location_id, image_path, output_path):
+def build_adventure_pdf(opening_text, player_name, location_id, image_path, output_path, main_quest=None):
     """Write the finished five-page adventure PDF to `output_path`."""
     _register_fonts()
     c = canvas.Canvas(output_path, pagesize=(PAGE_W, PAGE_H))
@@ -445,7 +572,7 @@ def build_adventure_pdf(opening_text, player_name, location_id, image_path, outp
     c.setTitle(f"{player_name}'s Journey Begins")
     c.setAuthor("Morimon Story Maker")
 
-    _page_content(c, opening_text, player_name, location_id, image_path, header_title)
+    _page_content(c, opening_text, player_name, location_id, image_path, header_title, main_quest)
     c.showPage()
     _page_divider(c, header_title)
     c.showPage()
